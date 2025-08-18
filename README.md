@@ -1,10 +1,11 @@
-# FPL Agent 🤖⚽
+# FPL Agent
 
 An intelligent AI agent for managing Fantasy Premier League teams automatically throughout the season. The agent makes data-driven decisions on transfers, captaincy, formations, and chip usage while respecting all FPL rules and constraints.
 
-## Features ✨
+## Features
 
 ### Core Capabilities
+
 - **Squad Optimization**: Uses linear programming to select optimal initial squad and weekly lineups
 - **Transfer Engine**: Evaluates and executes strategic transfers based on form, fixtures, and predictions
 - **Captain Selection**: Data-driven captain and vice-captain choices
@@ -13,37 +14,43 @@ An intelligent AI agent for managing Fantasy Premier League teams automatically 
 - **Continuous Monitoring**: Runs throughout the season with deadline alerts
 
 ### 2025/26 Season Features
+
 - Support for double chip usage (each chip usable twice per season)
 - Defensive contribution points tracking
 - Enhanced assist detection
 - AFCON transfer boost handling (GW16)
 - Banking up to 5 free transfers
 
-## Installation 🚀
+## Installation
 
 ### Prerequisites
+
 - Python 3.10 or higher
 - pip package manager
 
 ### Setup
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yourusername/fpl-agent.git
 cd fpl-agent
 ```
 
 2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 3. Create a `.env` file for configuration:
+
 ```bash
 cp .env.example .env
 ```
 
 4. Edit `.env` with your settings:
+
 ```env
 # FPL Settings
 FPL_MANAGER_ID=your_manager_id  # Optional for existing team
@@ -104,14 +111,16 @@ python scripts/run_continuous.py --manager-id YOUR_MANAGER_ID
 ```
 
 The agent will:
+
 - Monitor upcoming deadlines
 - Run analysis before each deadline
 - Make transfers and team selections
 - Log all decisions and reasoning
 
-## Architecture 🏗️
+## Architecture
 
 ### Project Structure
+
 ```
 fpl-agent/
 ├── src/
@@ -131,23 +140,27 @@ fpl-agent/
 ### Key Components
 
 #### Squad Optimizer (`src/core/squad_optimizer.py`)
+
 - Linear programming solver using PuLP
 - Considers expected points, form, fixtures, and value
 - Handles all FPL constraints (budget, positions, team limits)
 
 #### Transfer Engine (`src/core/transfer_engine.py`)
+
 - Evaluates all possible transfers
 - Considers hit costs and expected gains
 - Handles injuries and price changes
 - Wildcard squad building
 
 #### Captain Selector (`src/strategies/captain_selector.py`)
+
 - Statistical model for captain selection
 - Confidence scoring
 - Differential captain identification
 - Triple Captain timing
 
 #### Chip Strategy (`src/strategies/chips.py`)
+
 - Evaluates optimal chip usage
 - Plans chip schedule for the season
 - Considers double gameweeks and blank gameweeks
@@ -168,16 +181,18 @@ Edit `src/utils/config.py` or use environment variables:
 ### Optimization Weights
 
 Adjust in config for different strategies:
+
 - `POINTS_WEIGHT`: Weight for total points (default: 1.0)
 - `FORM_WEIGHT`: Weight for recent form (default: 0.3)
 - `FIXTURE_WEIGHT`: Weight for fixtures (default: 0.2)
 - `VALUE_WEIGHT`: Weight for value (default: 0.1)
 
-## Monitoring 📊
+## Monitoring
 
 ### Logs
 
 The agent provides detailed logging:
+
 - Decision rationale
 - Transfer recommendations
 - Chip usage
@@ -188,11 +203,12 @@ Logs are stored in `logs/` with daily rotation.
 ### Notifications (Optional)
 
 Configure notifications in `.env`:
+
 - Email alerts
 - Slack webhooks
 - Telegram bot
 
-## Development 🛠️
+## Development
 
 ### Running Tests
 
@@ -213,7 +229,7 @@ flake8 src/
 mypy src/
 ```
 
-## Docker Support 🐳
+## Docker Support
 
 Build and run with Docker:
 
@@ -230,9 +246,10 @@ docker run -d \
   fpl-agent
 ```
 
-## Roadmap 🗺️
+## Roadmap
 
 ### Planned Features
+
 - [ ] Web dashboard for monitoring
 - [ ] Machine learning predictions
 - [ ] News sentiment analysis
@@ -243,42 +260,43 @@ docker run -d \
 - [ ] Mini-league optimization
 
 ### Improvements
+
 - [ ] Better fixture difficulty rating
 - [ ] xG/xA data integration
 - [ ] Historical performance analysis
 - [ ] Opponent analysis
 - [ ] Set piece taker tracking
 
-## Contributing 🤝
+## Contributing
 
 Contributions are welcome! Please:
+
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests
 5. Submit a pull request
 
-## Disclaimer ⚠️
+## Disclaimer
 
 This tool is for educational and personal use. Always review decisions before executing them in your actual FPL team. The agent's performance depends on data quality and prediction accuracy.
 
-## License 📄
+## License
 
 MIT License - see LICENSE file for details
 
-## Support 💬
+## Support
 
 For issues, questions, or suggestions:
+
 - Open an issue on GitHub
 - Check existing issues for solutions
 - Read the documentation
 
-## Acknowledgments 🙏
+## Acknowledgments
 
 - Fantasy Premier League for the game and API
 - FPL community for strategies and insights
 - Open source contributors
 
 ---
-
-**Happy managing! May your arrows be green! 🟢**
