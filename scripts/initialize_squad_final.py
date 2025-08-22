@@ -17,6 +17,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.core.squad_optimizer_with_history import SquadOptimizerWithHistory
 from src.core.squad_optimizer import SquadOptimizer
 from src.api.fpl_client import FPLClient
+from src.data.models import Player
 from src.utils.logging import app_logger
 from src.utils.config import config
 
@@ -53,8 +54,15 @@ async def initialize_squad(use_history: bool = True, weights: dict = None):
         
     else:
         app_logger.info("Using basic optimization (fast, current season only)...")
+        
+        # Need to fetch players for basic optimizer
+        async with FPLClient() as client:
+            bootstrap = await client.get_bootstrap_data()
+            elements = bootstrap.get('elements', [])
+            players = [Player(**p) for p in elements]
+        
         optimizer = SquadOptimizer()
-        squad = await optimizer.optimize_initial_squad()
+        squad = optimizer.optimize_initial_squad(players)
     
     if not squad:
         app_logger.error("Failed to create squad")
@@ -72,36 +80,101 @@ async def initialize_squad(use_history: bool = True, weights: dict = None):
         bootstrap = await client.get_bootstrap_data()
         teams_data = {t['id']: t['name'] for t in bootstrap.get('teams', [])}
     
-    # Display squad by position
+    # Display STARTING XI and BENCH separately
     positions = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
     
-    for pos_id, pos_name in positions.items():
-        app_logger.info(f"\n{pos_name}:")
-        pos_players = [p for p in squad.players if p.element_type == pos_id]
+    # Display Starting XI
+    if hasattr(squad, 'starting_11') and squad.starting_11:
+        app_logger.info("\n⚽ STARTING XI")
+        app_logger.info("=" * 70)
         
-        for p in sorted(pos_players, key=lambda x: x.now_cost, reverse=True):
-            team_name = teams_data.get(p.team, "Unknown")
-            ownership = f"{p.selected_by_percent:.1f}%" if p.selected_by_percent else "0%"
-            form = f"{p.form:.1f}" if p.form else "0.0"
+        # Calculate expected points for starting 11
+        starting_points = sum(p.total_points for p in squad.starting_11)
+        app_logger.info(f"Expected GW1 Points: {starting_points} pts\n")
+        
+        # Group starting 11 by position
+        for pos_id, pos_name in positions.items():
+            pos_players = [p for p in squad.starting_11 if p.element_type == pos_id]
+            if pos_players:
+                app_logger.info(f"{pos_name}:")
+                for p in sorted(pos_players, key=lambda x: x.now_cost, reverse=True):
+                    team_name = teams_data.get(p.team, "Unknown")
+                    ownership = f"{p.selected_by_percent:.1f}%" if p.selected_by_percent else "0%"
+                    form = f"{p.form:.1f}" if p.form else "0.0"
+                    
+                    display_str = (
+                        f"  {p.web_name:<15} ({team_name:<12}) "
+                        f"£{p.price:.1f}m | "
+                        f"GW1: {p.total_points:>2}pts | "
+                        f"Form: {form:>3} | "
+                        f"Own: {ownership:>5}"
+                    )
+                    
+                    # Add historical info if available
+                    if use_history and hasattr(optimizer, 'player_histories'):
+                        history = optimizer.player_histories.get(p.id, {})
+                        if history and 'history_past' in history:
+                            past = history.get('history_past', [])
+                            if past:
+                                last_pts = past[-1].get('total_points', 0)
+                                display_str += f" | Last: {last_pts:>3}pts"
+                    
+                    app_logger.info(display_str)
+        
+        # Display Bench
+        app_logger.info("\n🪑 BENCH")
+        app_logger.info("=" * 70)
+        
+        if hasattr(squad, 'bench') and squad.bench:
+            for i, p in enumerate(squad.bench):
+                team_name = teams_data.get(p.team, "Unknown")
+                pos_name = positions[p.element_type]
+                
+                # Bench position label
+                if i < 3:
+                    bench_label = f"{i+1}."
+                else:
+                    bench_label = "GK"
+                
+                display_str = (
+                    f"  {bench_label:<3} {p.web_name:<15} ({team_name:<12}) "
+                    f"{pos_name:<3} £{p.price:.1f}m | "
+                    f"GW1: {p.total_points:>2}pts"
+                )
+                
+                app_logger.info(display_str)
+    else:
+        # Fallback to old display if starting_11 not available
+        app_logger.info("\n📋 FULL SQUAD (Starting XI not yet determined)")
+        app_logger.info("=" * 70)
+        
+        for pos_id, pos_name in positions.items():
+            app_logger.info(f"\n{pos_name}:")
+            pos_players = [p for p in squad.players if p.element_type == pos_id]
             
-            display_str = (
-                f"  - {p.web_name:<15} ({team_name:<12}) "
-                f"£{p.price:.1f}m | "
-                f"GW1: {p.total_points:>3}pts | "
-                f"Form: {form:>3} | "
-                f"Own: {ownership:>5}"
-            )
-            
-            # Add historical info if available
-            if use_history and hasattr(optimizer, 'player_histories'):
-                history = optimizer.player_histories.get(p.id, {})
-                if history and 'history_past' in history:
-                    past = history.get('history_past', [])
-                    if past:
-                        last_pts = past[-1].get('total_points', 0)
-                        display_str += f" | Last season: {last_pts:>3}pts"
-            
-            app_logger.info(display_str)
+            for p in sorted(pos_players, key=lambda x: x.now_cost, reverse=True):
+                team_name = teams_data.get(p.team, "Unknown")
+                ownership = f"{p.selected_by_percent:.1f}%" if p.selected_by_percent else "0%"
+                form = f"{p.form:.1f}" if p.form else "0.0"
+                
+                display_str = (
+                    f"  - {p.web_name:<15} ({team_name:<12}) "
+                    f"£{p.price:.1f}m | "
+                    f"GW1: {p.total_points:>3}pts | "
+                    f"Form: {form:>3} | "
+                    f"Own: {ownership:>5}"
+                )
+                
+                # Add historical info if available
+                if use_history and hasattr(optimizer, 'player_histories'):
+                    history = optimizer.player_histories.get(p.id, {})
+                    if history and 'history_past' in history:
+                        past = history.get('history_past', [])
+                        if past:
+                            last_pts = past[-1].get('total_points', 0)
+                            display_str += f" | Last season: {last_pts:>3}pts"
+                
+                app_logger.info(display_str)
     
     # Squad analysis
     app_logger.info("\n📊 Squad Analysis:")
@@ -137,7 +210,36 @@ async def initialize_squad(use_history: bool = True, weights: dict = None):
             "budget_used": squad.value,
             "budget_remaining": squad.remaining_budget
         },
-        "players": [
+        "starting_11": [
+            {
+                "id": p.id,
+                "name": p.web_name,
+                "team": teams_data.get(p.team, "Unknown"),
+                "position": positions[p.element_type],
+                "price": p.price,
+                "gw1_points": p.total_points,
+                "form": float(p.form) if p.form else 0,
+                "ownership": p.selected_by_percent,
+                "status": p.status
+            }
+            for p in (squad.starting_11 if hasattr(squad, 'starting_11') and squad.starting_11 else squad.players[:11])
+        ],
+        "bench": [
+            {
+                "id": p.id,
+                "name": p.web_name,
+                "team": teams_data.get(p.team, "Unknown"),
+                "position": positions[p.element_type],
+                "price": p.price,
+                "gw1_points": p.total_points,
+                "form": float(p.form) if p.form else 0,
+                "ownership": p.selected_by_percent,
+                "status": p.status,
+                "bench_order": i + 1
+            }
+            for i, p in enumerate(squad.bench if hasattr(squad, 'bench') and squad.bench else squad.players[11:])
+        ],
+        "all_players": [
             {
                 "id": p.id,
                 "name": p.web_name,
@@ -157,7 +259,9 @@ async def initialize_squad(use_history: bool = True, weights: dict = None):
             "budget_players": len(budget_players),
             "avg_ownership": avg_ownership,
             "avg_form": avg_form,
-            "total_gw1_points": sum(p.total_points for p in squad.players)
+            "total_gw1_points": sum(p.total_points for p in squad.players),
+            "starting_11_points": sum(p.total_points for p in squad.starting_11) if hasattr(squad, 'starting_11') and squad.starting_11 else 0,
+            "bench_value": sum(p.price for p in squad.bench) if hasattr(squad, 'bench') and squad.bench else 0
         }
     }
     
@@ -165,8 +269,8 @@ async def initialize_squad(use_history: bool = True, weights: dict = None):
     if use_history and hasattr(optimizer, 'weights'):
         squad_data["metadata"]["weights"] = optimizer.weights
         
-        # Add historical points
-        for player_data in squad_data["players"]:
+        # Add historical points to all players
+        for player_data in squad_data["all_players"]:
             if hasattr(optimizer, 'player_histories'):
                 history = optimizer.player_histories.get(player_data["id"], {})
                 if history and 'history_past' in history:

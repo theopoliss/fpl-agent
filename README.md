@@ -78,17 +78,26 @@ LOG_LEVEL=INFO
 
 ### Initialize a New Squad
 
-Create an optimal initial squad from scratch:
+Create an optimal initial squad using REAL historical data:
 
 ```bash
-python scripts/initialize_squad.py
+# Best mode - uses real player history from FPL API (takes ~30 seconds)
+python scripts/initialize_squad_final.py
+
+# Fast mode - basic optimization without history (takes ~2 seconds)
+python scripts/initialize_squad_final.py --fast
+
+# Custom weights - configure your own optimization priorities
+python scripts/initialize_squad_final.py --weights
 ```
 
-Load an existing team:
-
-```bash
-python scripts/initialize_squad.py --manager-id YOUR_MANAGER_ID
-```
+The optimizer considers:
+- **Historical performance**: Real last season points from FPL API
+- **Current form**: GW1 performance and recent transfers
+- **Fixtures**: Next 5 gameweeks difficulty
+- **Value**: Points per million spent
+- **Differential**: Low ownership hidden gems
+- **Expected stats**: xG, xA, and underlying metrics
 
 ### Run Gameweek Analysis
 

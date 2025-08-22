@@ -12,6 +12,7 @@ from src.api.fpl_client import FPLClient
 from src.utils.constants import FPLConstants, Position, FormationValidator
 from src.utils.logging import app_logger, log_decision
 from src.utils.config import config
+from src.utils.set_piece_takers import SetPieceTakers
 
 
 @dataclass
@@ -24,6 +25,7 @@ class PlayerScore:
     value_score: float  # Points per million
     ownership_score: float  # Differential potential
     expected_score: float  # xG, xA based
+    set_piece_score: float  # Bonus for penalty/FK takers
     total_score: float  # Weighted combination
 
 
@@ -32,12 +34,13 @@ class SquadOptimizerWithHistory:
     
     def __init__(self):
         self.weights = {
-            'historical': 0.40,   # Real last season data
-            'form': 0.15,         # Recent form
-            'fixtures': 0.20,     # Fixture difficulty
-            'value': 0.15,        # Value for money
-            'ownership': 0.02,    # Differential 
-            'expected': 0.08      # Expected stats
+            'historical': 0.50,   # Real last season data
+            'form': 0.05,         # Recent form
+            'fixtures': 0.15,     # Fixture difficulty
+            'value': 0.10,        # Value for money
+            'ownership': 0.0,     # Differential 
+            'expected': 0.10,     # Expected stats
+            'set_pieces': 0.10    # Set piece taker bonus
         }
         self.player_histories = {}  # Cache for player history data
         
@@ -167,6 +170,9 @@ class SquadOptimizerWithHistory:
             # 6. Expected stats score (xG, xA, xGI)
             expected_score = self._calculate_expected_score(player, player_data)
             
+            # 7. Set piece taker bonus
+            set_piece_score = self._calculate_set_piece_score(player, history)
+            
             # Calculate weighted total
             total_score = (
                 self.weights['historical'] * historical_score +
@@ -174,7 +180,8 @@ class SquadOptimizerWithHistory:
                 self.weights['fixtures'] * fixture_score +
                 self.weights['value'] * value_score +
                 self.weights['ownership'] * ownership_score +
-                self.weights['expected'] * expected_score
+                self.weights['expected'] * expected_score +
+                self.weights['set_pieces'] * set_piece_score
             )
             
             scores[player.id] = PlayerScore(
@@ -185,64 +192,132 @@ class SquadOptimizerWithHistory:
                 value_score=value_score,
                 ownership_score=ownership_score,
                 expected_score=expected_score,
+                set_piece_score=set_piece_score,
                 total_score=total_score
             )
         
         return scores
     
     def _calculate_historical_score(self, player: Player, history: Dict) -> float:
-        """Calculate score from ACTUAL historical performance"""
+        """
+        Calculate score from ACTUAL historical performance
+        Uses points per 90 minutes with intelligent weighting to handle injuries
+        """
         
         if not history or 'history_past' not in history:
             # No history available - new player or promoted team
-            return player.total_points * 2.5  # Use current form projected
+            # Heavy penalty for unknown players when focusing on historical data
+            # Only use 10% of current form as we have no historical basis
+            return min(player.total_points * 0.5, 10)  # Max score of 10 for unknowns
         
         past_seasons = history.get('history_past', [])
         
         if not past_seasons:
+            # No past seasons - heavily penalize
+            return min(player.total_points * 0.5, 10)
+        
+        # Calculate weighted points per 90 for all available seasons
+        weighted_pts_per_90 = 0
+        total_weight = 0
+        recent_injury_prone = False
+        total_minutes_analyzed = 0  # Track total minutes across all seasons
+        
+        # Look at up to 3 seasons of data
+        seasons_to_consider = past_seasons[-3:] if len(past_seasons) >= 3 else past_seasons
+        num_seasons = len(seasons_to_consider)
+        
+        for i, season in enumerate(seasons_to_consider):
+            season_points = season.get('total_points', 0)
+            season_minutes = season.get('minutes', 0)
+            
+            # Skip seasons with virtually no data
+            if season_minutes < 180:  # Less than 2 full games
+                continue
+            
+            total_minutes_analyzed += season_minutes
+            
+            # Calculate points per 90 for this season
+            pts_per_90 = (season_points / season_minutes) * 90 if season_minutes > 0 else 0
+            
+            # Weight by minutes played (more minutes = more reliable data)
+            # Full season is ~3420 minutes (38 games * 90 mins)
+            minutes_weight = min(season_minutes / 3420, 1.0)
+            
+            # Recency weight (more recent seasons matter more)
+            # Most recent gets 1.2x, oldest gets 0.8x
+            recency_multiplier = 1.2 - (0.4 * i / max(num_seasons - 1, 1))
+            
+            # Combined weight
+            season_weight = minutes_weight * recency_multiplier
+            
+            # Add to weighted average
+            weighted_pts_per_90 += pts_per_90 * season_weight
+            total_weight += season_weight
+            
+            # Check if recently injury prone (most recent season)
+            if i == 0 and season_minutes < 2000:
+                recent_injury_prone = True
+        
+        # Calculate final points per 90
+        if total_weight > 0:
+            final_pts_per_90 = weighted_pts_per_90 / total_weight
+        else:
+            # Fallback if no valid historical data
             return player.total_points * 2.5
         
-        # Get last season's performance (most recent in the list)
-        last_season = past_seasons[-1] if past_seasons else None
+        # If player has very limited total minutes across all seasons, heavily penalize
+        # This prevents overvaluing players with small sample sizes
+        if total_minutes_analyzed < 900:  # Less than 10 full games total
+            # Scale down based on how little data we have
+            sample_size_multiplier = total_minutes_analyzed / 900
+            final_pts_per_90 *= sample_size_multiplier
         
-        if last_season:
-            last_season_points = last_season.get('total_points', 0)
-            last_season_minutes = last_season.get('minutes', 0)
-            
-            # Calculate points per 90 minutes from last season
-            if last_season_minutes > 0:
-                points_per_90 = (last_season_points / last_season_minutes) * 90
-            else:
-                points_per_90 = 0
-            
-            # Consider multiple seasons if available (weighted by recency)
-            if len(past_seasons) >= 2:
-                prev_season = past_seasons[-2]
-                prev_points = prev_season.get('total_points', 0)
-                # Weight: 70% last season, 30% season before
-                avg_points = last_season_points * 0.7 + prev_points * 0.3
-            else:
-                avg_points = last_season_points
-            
-            # Normalize to 0-100 scale
-            # 200+ points in a season is excellent (score ~100)
-            # 150+ points is very good (score ~75)
-            # 100+ points is decent (score ~50)
-            base_score = min((avg_points / 200) * 100, 100)
-            
-            # Bonus for consistency - played regularly
-            if last_season_minutes > 2000:  # Played most games
-                base_score *= 1.1
-            elif last_season_minutes < 900:  # Bit-part player
-                base_score *= 0.8
-            
-            # Extra bonus for elite performers
-            if last_season_points > 200:
-                base_score = min(base_score * 1.2, 100)
-            
-            return base_score
+        # Project to full season (38 games * 90 minutes * pts_per_90)
+        # But assume realistic 34 games played for projection
+        projected_season_points = final_pts_per_90 * 34
         
-        return player.total_points * 2.5  # Fallback
+        # Apply small penalty if recently injury prone
+        if recent_injury_prone:
+            projected_season_points *= 0.9  # 10% discount for injury risk
+        
+        # Also consider best historical season total as a reality check
+        # This prevents overvaluing mediocre players with decent pts/90
+        best_season_total = 0
+        for season in seasons_to_consider:
+            if season.get('minutes', 0) > 1800:  # Only consider substantial seasons
+                best_season_total = max(best_season_total, season.get('total_points', 0))
+        
+        # If projected points are way higher than best historical season,
+        # take weighted average to be more conservative
+        if best_season_total > 0 and projected_season_points > best_season_total * 1.2:
+            # Weight: 60% best historical, 40% projected
+            projected_season_points = (best_season_total * 0.6 + projected_season_points * 0.4)
+        
+        # Normalize to 0-100 scale - STRICTER to differentiate elite from good
+        # 250+ points = exceptional (100)
+        # 200-250 points = excellent (75-90)
+        # 170-200 points = very good (60-75)
+        # 140-170 points = good (45-60)
+        # 110-140 points = decent (30-45)
+        # 80-110 points = squad player (15-30)
+        # <80 points = bench fodder (0-15)
+        if projected_season_points >= 250:
+            base_score = 100
+        elif projected_season_points >= 200:
+            base_score = 75 + (projected_season_points - 200) * 0.3  # 75-90
+        elif projected_season_points >= 170:
+            base_score = 60 + (projected_season_points - 170) * 0.5  # 60-75
+        elif projected_season_points >= 140:
+            base_score = 45 + (projected_season_points - 140) * 0.5  # 45-60
+        elif projected_season_points >= 110:
+            base_score = 30 + (projected_season_points - 110) * 0.5  # 30-45
+        elif projected_season_points >= 80:
+            base_score = 15 + (projected_season_points - 80) * 0.5   # 15-30
+        else:
+            base_score = projected_season_points * 0.1875  # 0-15
+        
+        # Cap at 100
+        return min(base_score, 100)
     
     def _calculate_form_score(self, player: Player, data: Dict) -> float:
         """Calculate form score from recent performances"""
@@ -377,6 +452,56 @@ class SquadOptimizerWithHistory:
         
         return min(score, 100)
     
+    def _calculate_set_piece_score(self, player: Player, history: Dict) -> float:
+        """
+        Calculate bonus score for set piece takers
+        
+        Primary penalty takers get huge bonus
+        Free kick specialists get moderate bonus  
+        Corner takers get small bonus
+        """
+        
+        # Start with known set piece takers
+        base_score = SetPieceTakers.get_set_piece_score(player.web_name)
+        
+        # Enhance with historical data if available
+        if history:
+            historical_analysis = SetPieceTakers.analyze_historical_set_pieces(history)
+            
+            # Add bonus for historical penalty success
+            penalties_taken = (
+                historical_analysis.get('penalties_scored', 0) + 
+                historical_analysis.get('penalties_missed', 0)
+            )
+            
+            if penalties_taken >= 5:
+                # Confirmed penalty taker from history
+                base_score = max(base_score, 20)
+            elif penalties_taken >= 2:
+                # Occasional penalty taker
+                base_score = max(base_score, 10)
+        
+        # Position-based adjustments
+        position = Position(player.element_type)
+        
+        if position == Position.GOALKEEPER:
+            # GKs don't take set pieces (except rare penalties)
+            base_score = 0
+        elif position == Position.DEFENDER:
+            # Defenders who take set pieces are extra valuable
+            if base_score > 0:
+                base_score *= 1.2
+        elif position == Position.MIDFIELDER:
+            # Expected for mids, normal scoring
+            pass
+        else:  # Forward
+            # Forwards on penalties are very valuable
+            if SetPieceTakers.is_penalty_taker(player.web_name, primary_only=True):
+                base_score *= 1.3
+        
+        # Cap at 100
+        return min(base_score * 4, 100)  # Scale up to 0-100 range
+    
     def _optimize_with_scores(
         self,
         players: List[Player],
@@ -393,11 +518,27 @@ class SquadOptimizerWithHistory:
         for p in players:
             player_vars[p.id] = pulp.LpVariable(f"player_{p.id}", cat="Binary")
         
-        # Objective: maximize total score
-        prob += pulp.lpSum([
-            player_vars[p.id] * scores[p.id].total_score 
-            for p in players
-        ])
+        # Separate goalkeepers by price for starter/bench strategy
+        goalkeepers = [p for p in players if p.element_type == Position.GOALKEEPER.value]
+        premium_gks = [p for p in goalkeepers if p.now_cost >= 45]  # £4.5m+
+        fodder_gks = [p for p in goalkeepers if p.now_cost <= 40]  # £4.0m
+        
+        # Objective: maximize total score but penalize expensive bench GKs
+        # We want 1 good GK and 1 cheap GK
+        obj_expression = []
+        for p in players:
+            if p.element_type == Position.GOALKEEPER.value:
+                # Reduce score for expensive backup GKs
+                if p.now_cost <= 40:
+                    # Fodder GK - small bonus for being cheap
+                    obj_expression.append(player_vars[p.id] * (scores[p.id].total_score + 5))
+                else:
+                    # Regular GK - normal score
+                    obj_expression.append(player_vars[p.id] * scores[p.id].total_score)
+            else:
+                obj_expression.append(player_vars[p.id] * scores[p.id].total_score)
+        
+        prob += pulp.lpSum(obj_expression)
         
         # Constraints
         
@@ -447,7 +588,19 @@ class SquadOptimizerWithHistory:
         cheap_players = [p for p in players if p.now_cost <= 45]  # £4.5m or less
         prob += pulp.lpSum([
             player_vars[p.id] for p in cheap_players
-        ]) <= 3  # Max 3 bench fodder players
+        ]) <= 4  # Max 4 bench fodder players (including £4.0m GK)
+        
+        # 8. Goalkeeper strategy: 1 premium + 1 fodder
+        if len(premium_gks) >= 1 and len(fodder_gks) >= 1:
+            # Ensure we pick exactly 1 goalkeeper >= £4.5m
+            prob += pulp.lpSum([
+                player_vars[p.id] for p in premium_gks
+            ]) >= 1
+            
+            # Ensure we pick exactly 1 goalkeeper <= £4.0m  
+            prob += pulp.lpSum([
+                player_vars[p.id] for p in fodder_gks
+            ]) >= 1
         
         # Solve
         solver = pulp.PULP_CBC_CMD(
@@ -476,15 +629,22 @@ class SquadOptimizerWithHistory:
                     f"Total score={score.total_score:.1f}, "
                     f"Historical={score.historical_score:.1f} (Last season: {last_season_pts}pts), "
                     f"Form={score.form_score:.1f}, "
-                    f"Fixtures={score.fixture_score:.1f}"
+                    f"Fixtures={score.fixture_score:.1f}, "
+                    f"Set pieces={score.set_piece_score:.1f}"
                 )
         
-        # Create squad
+        # Create squad with starting 11 selection
         squad = Squad(
             players=selected_players,
             budget=budget,
-            formation=self._suggest_formation(selected_players)
+            formation=(1, 4, 4, 2)  # Default formation, will be updated
         )
+        
+        # Select starting 11 and bench (this also determines the actual formation)
+        starting_11, bench, actual_formation = self.select_starting_eleven(selected_players, scores)
+        squad.starting_11 = starting_11
+        squad.bench = bench
+        squad.formation = actual_formation  # Use the formation from starting 11 selection
         
         return squad
     
@@ -530,3 +690,123 @@ class SquadOptimizerWithHistory:
                 best_formation = formation
         
         return best_formation
+    
+    def select_starting_eleven(
+        self, 
+        players: List[Player], 
+        scores: Dict[int, PlayerScore]
+    ) -> Tuple[List[Player], List[Player], Tuple[int, int, int, int]]:
+        """
+        Select the best starting 11 and order the bench
+        
+        Returns:
+            Tuple of (starting_11, bench_ordered, formation)
+        """
+        
+        # Separate players by position
+        positions = {
+            Position.GOALKEEPER: [],
+            Position.DEFENDER: [],
+            Position.MIDFIELDER: [],
+            Position.FORWARD: []
+        }
+        
+        for p in players:
+            pos = Position(p.element_type)
+            positions[pos].append(p)
+        
+        # Sort each position by total score (not just points)
+        for pos in positions:
+            positions[pos].sort(
+                key=lambda x: scores[x.id].total_score if x.id in scores else x.total_points, 
+                reverse=True
+            )
+        
+        # Select starting 11
+        starting_11 = []
+        bench = []
+        
+        # 1. Goalkeepers: Best one starts, cheapest benched
+        if len(positions[Position.GOALKEEPER]) >= 2:
+            # Start the higher-scoring GK
+            starting_11.append(positions[Position.GOALKEEPER][0])
+            # Bench the cheaper one (should be £4.0m fodder)
+            bench.append(positions[Position.GOALKEEPER][1])
+        
+        # 2. Find optimal formation for outfield players
+        best_formation = None
+        best_score = 0
+        best_lineup = None
+        
+        for formation in FPLConstants.VALID_FORMATIONS:
+            gk, df, md, fw = formation
+            
+            # Skip if we don't have enough players
+            if (len(positions[Position.DEFENDER]) < df or 
+                len(positions[Position.MIDFIELDER]) < md or 
+                len(positions[Position.FORWARD]) < fw):
+                continue
+            
+            # Calculate total score for this formation
+            formation_score = 0
+            temp_lineup = []
+            
+            # Add best defenders
+            for i in range(df):
+                p = positions[Position.DEFENDER][i]
+                formation_score += scores[p.id].total_score if p.id in scores else p.total_points
+                temp_lineup.append(p)
+            
+            # Add best midfielders
+            for i in range(md):
+                p = positions[Position.MIDFIELDER][i]
+                formation_score += scores[p.id].total_score if p.id in scores else p.total_points
+                temp_lineup.append(p)
+            
+            # Add best forwards
+            for i in range(fw):
+                p = positions[Position.FORWARD][i]
+                formation_score += scores[p.id].total_score if p.id in scores else p.total_points
+                temp_lineup.append(p)
+            
+            if formation_score > best_score:
+                best_score = formation_score
+                best_formation = formation
+                best_lineup = temp_lineup
+        
+        # Add the best lineup to starting 11
+        if best_lineup:
+            starting_11.extend(best_lineup)
+            
+            # Add remaining players to bench (excluding selected GK)
+            gk, df, md, fw = best_formation
+            
+            # Bench remaining defenders
+            for i in range(df, len(positions[Position.DEFENDER])):
+                bench.append(positions[Position.DEFENDER][i])
+            
+            # Bench remaining midfielders
+            for i in range(md, len(positions[Position.MIDFIELDER])):
+                bench.append(positions[Position.MIDFIELDER][i])
+            
+            # Bench remaining forwards
+            for i in range(fw, len(positions[Position.FORWARD])):
+                bench.append(positions[Position.FORWARD][i])
+        
+        # Order bench by priority (best scoring first, but respecting positions)
+        # Typically: Best outfield player, then coverage for each position
+        outfield_bench = [p for p in bench if p.element_type != Position.GOALKEEPER.value]
+        outfield_bench.sort(
+            key=lambda x: scores[x.id].total_score if x.id in scores else x.total_points,
+            reverse=True
+        )
+        
+        # Reorder bench: best 3 outfield players + GK
+        gk_bench = [p for p in bench if p.element_type == Position.GOALKEEPER.value]
+        bench_ordered = outfield_bench[:3] + gk_bench
+        
+        app_logger.info(f"Optimal formation for starting XI: {best_formation}")
+        app_logger.info(f"Starting 11: {len(starting_11)} players")
+        app_logger.info(f"Bench: {len(bench_ordered)} players")
+        
+        return starting_11, bench_ordered, best_formation

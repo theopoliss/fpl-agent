@@ -198,6 +198,10 @@ class Squad(BaseModel):
     budget: float = 100.0
     free_transfers: int = 1
     
+    # Starting 11 and bench (set by optimizer)
+    starting_11: Optional[List[Player]] = None
+    bench: Optional[List[Player]] = None
+    
     @property
     def value(self) -> float:
         return sum(p.price for p in self.players)
