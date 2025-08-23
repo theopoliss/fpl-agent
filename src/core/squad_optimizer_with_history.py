@@ -34,10 +34,10 @@ class SquadOptimizerWithHistory:
     
     def __init__(self):
         self.weights = {
-            'historical': 0.50,   # Real last season data
+            'historical': 0.55,   # Real last season data
             'form': 0.05,         # Recent form
             'fixtures': 0.15,     # Fixture difficulty
-            'value': 0.10,        # Value for money
+            'value': 0.05,        # Value for money
             'ownership': 0.0,     # Differential 
             'expected': 0.10,     # Expected stats
             'set_pieces': 0.10    # Set piece taker bonus

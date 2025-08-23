@@ -17,24 +17,25 @@ import argparse
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.core.squad_optimizer_with_history import SquadOptimizerWithHistory
+from src.core.squad_optimizer_preseason import PreseasonSquadOptimizer
 from src.api.fpl_client import FPLClient
 from src.data.models import Player
 from src.utils.logging import app_logger
 from src.utils.config import config
 
 
-class BacktestOptimizer(SquadOptimizerWithHistory):
+class BacktestOptimizer(PreseasonSquadOptimizer):
     """Modified optimizer that only uses data up to a certain season"""
     
     def __init__(self, max_season_year: str = "2023/24"):
         super().__init__()
         self.max_season_year = max_season_year
-        app_logger.info(f"Backtesting with data up to {max_season_year} season")
+        app_logger.info(f"Backtesting with pre-season optimizer using data up to {max_season_year}")
         
     def _calculate_historical_score(self, player: Player, history: Dict) -> float:
         """
-        Calculate score from historical performance UP TO max_season_year
-        Excludes 2024/25 data for backtesting
+        Override to exclude 2024/25 data for backtesting
+        Only use data up to max_season_year
         """
         
         if not history or 'history_past' not in history:
@@ -65,79 +66,56 @@ class BacktestOptimizer(SquadOptimizerWithHistory):
             # Player has no valid historical data before cutoff
             return min(player.total_points * 0.5, 10)
         
-        # Now use the same pts/90 calculation but only on valid seasons
-        weighted_pts_per_90 = 0
+        # Get last 3 valid seasons
+        recent_seasons = valid_seasons[-3:] if len(valid_seasons) >= 3 else valid_seasons
+        
+        # Calculate weighted average with recency bias
+        total_weighted_points = 0
         total_weight = 0
-        total_minutes_analyzed = 0
         
-        # Look at up to 3 seasons before 24/25
-        seasons_to_consider = valid_seasons[-3:] if len(valid_seasons) >= 3 else valid_seasons
-        num_seasons = len(seasons_to_consider)
-        
-        for i, season in enumerate(seasons_to_consider):
-            season_points = season.get('total_points', 0)
-            season_minutes = season.get('minutes', 0)
+        for i, season in enumerate(reversed(recent_seasons)):  # Most recent first
+            points = season.get('total_points', 0)
+            minutes = season.get('minutes', 0)
             
-            if season_minutes < 180:  # Less than 2 full games
+            if minutes < 900:  # Less than 10 games
                 continue
+                
+            # Recency weight: most recent = 1.0, previous = 0.7, before that = 0.5
+            recency_weight = [1.0, 0.7, 0.5][min(i, 2)]
             
-            total_minutes_analyzed += season_minutes
+            # Minutes weight (favor players who play regularly)
+            minutes_weight = min(minutes / 3000, 1.0)  # Cap at ~33 games
             
-            # Calculate points per 90
-            pts_per_90 = (season_points / season_minutes) * 90 if season_minutes > 0 else 0
-            
-            # Weight by minutes played
-            minutes_weight = min(season_minutes / 3420, 1.0)
-            
-            # Recency weight (within our valid seasons)
-            recency_multiplier = 1.2 - (0.4 * i / max(num_seasons - 1, 1))
-            
-            # Combined weight
-            season_weight = minutes_weight * recency_multiplier
-            
-            weighted_pts_per_90 += pts_per_90 * season_weight
-            total_weight += season_weight
+            weight = recency_weight * minutes_weight
+            total_weighted_points += points * weight
+            total_weight += weight
         
-        # Calculate final points per 90
-        if total_weight > 0:
-            final_pts_per_90 = weighted_pts_per_90 / total_weight
+        if total_weight == 0:
+            return 5
+            
+        avg_points = total_weighted_points / total_weight
+        
+        # Enhanced scoring for elite players
+        if avg_points >= 250:
+            return 100
+        elif avg_points >= 225:
+            return 95
+        elif avg_points >= 200:
+            return 90
+        elif avg_points >= 180:
+            return 80
+        elif avg_points >= 160:
+            return 70
+        elif avg_points >= 140:
+            return 60
+        elif avg_points >= 120:
+            return 50
+        elif avg_points >= 100:
+            return 40
+        elif avg_points >= 80:
+            return 30
         else:
-            return min(player.total_points * 0.5, 10)
-        
-        # Apply sample size penalty
-        if total_minutes_analyzed < 900:
-            sample_size_multiplier = total_minutes_analyzed / 900
-            final_pts_per_90 *= sample_size_multiplier
-        
-        # Project to full season
-        projected_season_points = final_pts_per_90 * 34
-        
-        # Reality check against best historical season (pre-24/25)
-        best_season_total = 0
-        for season in seasons_to_consider:
-            if season.get('minutes', 0) > 1800:
-                best_season_total = max(best_season_total, season.get('total_points', 0))
-        
-        if best_season_total > 0 and projected_season_points > best_season_total * 1.2:
-            projected_season_points = (best_season_total * 0.6 + projected_season_points * 0.4)
-        
-        # Same strict scoring scale
-        if projected_season_points >= 250:
-            base_score = 100
-        elif projected_season_points >= 200:
-            base_score = 75 + (projected_season_points - 200) * 0.3
-        elif projected_season_points >= 170:
-            base_score = 60 + (projected_season_points - 170) * 0.5
-        elif projected_season_points >= 140:
-            base_score = 45 + (projected_season_points - 140) * 0.5
-        elif projected_season_points >= 110:
-            base_score = 30 + (projected_season_points - 110) * 0.5
-        elif projected_season_points >= 80:
-            base_score = 15 + (projected_season_points - 80) * 0.5
-        else:
-            base_score = projected_season_points * 0.1875
-        
-        return min(base_score, 100)
+            return max(5, avg_points * 0.3)
 
 
 async def evaluate_squad_performance(squad_players: List[Dict]) -> Dict:
